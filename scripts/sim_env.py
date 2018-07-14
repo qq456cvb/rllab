@@ -34,8 +34,10 @@ def visualize_env(env, mode, max_steps=sys.maxsize, speedup=1):
         env.reset()
         env.render()
         for i in range(max_steps):
+            # print(env.action_space)
             action = env.action_space.sample()
-            _, _, done, _ = env.step(action)
+            ob, _, done, _ = env.step(action)
+            print(ob[122:124])
             # if i % 10 == 0:
             env.render()
             # import time as ttime
@@ -127,13 +129,14 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument('env', type=str,
                         help='module path to the env class')
-    parser.add_argument('--mode', type=str, default='static',
+    parser.add_argument('--mode', type=str, default='random',
                         choices=['noop', 'random', 'static', 'human'],
                         help='module path to the env class')
     parser.add_argument('--speedup', type=float, default=1, help='speedup')
     parser.add_argument('--max_steps', type=int,
                         default=sys.maxsize, help='max steps')
     args = parser.parse_args()
+    args.max_steps = 200
     env = load_class(args.env, Env, ["rllab", "envs"])()
     visualize_env(env, mode=args.mode, max_steps=args.max_steps,
                   speedup=args.speedup)
