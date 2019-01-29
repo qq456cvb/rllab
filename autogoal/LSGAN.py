@@ -9,8 +9,9 @@ from tensorpack.utils.viz import stack_patches
 from tensorpack.tfutils.summary import add_moving_summary
 from tensorpack.tfutils.scope_utils import auto_reuse_variable_scope
 import tensorflow as tf
+import cv2
 
-from GAN import GANTrainer, RandomZData, GANModelDesc
+from autogoal.GAN import GANTrainer, RandomZData, GANModelDesc
 
 from rllab.envs.base import Env
 # from rllab.env.base import MDP
@@ -51,7 +52,7 @@ class Model(GANModelDesc):
 
     def build_graph(self, goal_pos):
 
-        z = tf.random_uniform([self.batch, self.zdim], -1, 1, name='z_train')
+        z = tf.random_normal(shape=[self.batch, self.zdim], name='z_train')
         z = tf.placeholder_with_default(z, [None, self.zdim], name='z')
 
         with argscope([FullyConnected],
@@ -67,60 +68,7 @@ class Model(GANModelDesc):
         self.collect_variables()
 
     def optimizer(self):
-        lr = tf.get_variable('learning_rate', initializer=2e-4, trainable=False)
+        lr = tf.get_variable('gan_learning_rate', initializer=2e-4, trainable=False)
         return tf.train.AdamOptimizer(lr, beta1=0.5, epsilon=1e-3)
 
 
-def get_args(default_batch=128, default_z_dim=4):
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--gpu', help='comma separated list of GPU(s) to use.')
-    parser.add_argument('--load', help='load model')
-    parser.add_argument('--sample', action='store_true', help='view generated examples')
-    parser.add_argument('--data', help='a jpeg directory')
-    parser.add_argument('--z-dim', help='hidden dimension', type=int, default=default_z_dim)
-    parser.add_argument('--batch', help='batch size', type=int, default=default_batch)
-    global args
-    args = parser.parse_args()
-    if args.gpu:
-        os.environ['CUDA_VISIBLE_DEVICES'] = args.gpu
-    return args
-
-
-class DF(DataFlow):
-    def __init__(self):
-        self.env = load_class("mujoco.maze.ant_maze_env", Env, ["rllab", "envs"])()
-        self.max_steps = 200
-
-    def get_data(self):
-        self.env.reset()
-        # self.env.render()
-        for i in range(self.max_steps):
-            # print(env.action_space)
-            action = self.env.action_space.sample()
-            ob, _, done, _ = self.env.step(action)
-            yield [ob[122:124]]
-            # print(ob[122:124])
-            # if i % 10 == 0:
-            # self.env.render()
-            # import time as ttime
-            # time.sleep(timestep / speedup)
-            if done:
-                self.env.reset()
-
-
-if __name__ == '__main__':
-    args = get_args()
-    M = Model(batch=args.batch, z_dim=args.z_dim)
-    if args.sample:
-        # sample(M, args.load)
-        pass
-    else:
-        logger.auto_set_dir()
-        GANTrainer(
-            input=QueueInput(PrefetchDataZMQ(BatchData(DF(), args.batch), args.batch)),
-            model=M).train_with_defaults(
-            callbacks=[ModelSaver()],
-            steps_per_epoch=300,
-            max_epoch=200,
-            session_init=SaverRestore(args.load) if args.load else None
-        )

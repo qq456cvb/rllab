@@ -1,4 +1,5 @@
 import multiprocessing as mp
+from multiprocessing import Array
 import time
 import os
 import threading
@@ -34,11 +35,12 @@ class TransitionExperience(object):
 
 @six.add_metaclass(ABCMeta)
 class SimulatorProcessBase(mp.Process):
-    def __init__(self, idx):
+    def __init__(self, idx, goals):
         super(SimulatorProcessBase, self).__init__()
         self.idx = int(idx)
         self.name = u'simulator-{}'.format(self.idx)
         self.identity = self.name.encode('utf-8')
+        self.goals = goals
 
     @abstractmethod
     def _build_player(self):
@@ -51,13 +53,13 @@ class SimulatorProcessStateExchange(SimulatorProcessBase):
     send states and receive the next action
     """
 
-    def __init__(self, idx, pipe_c2s, pipe_s2c):
+    def __init__(self, idx, pipe_c2s, pipe_s2c, goals):
         """
         Args:
             idx: idx of this process
             pipe_c2s, pipe_s2c (str): name of the pipe
         """
-        super(SimulatorProcessStateExchange, self).__init__(idx)
+        super(SimulatorProcessStateExchange, self).__init__(idx, goals)
         self.c2s = pipe_c2s
         self.s2c = pipe_s2c
 
@@ -73,14 +75,15 @@ class SimulatorProcessStateExchange(SimulatorProcessBase):
         s2c_socket.setsockopt(zmq.IDENTITY, self.identity)
         s2c_socket.connect(self.s2c)
 
-        player.reset()
+        st = player.reset()
         r, is_over = 0, False
-        st = player.get_current_obs()
+
         while True:
             c2s_socket.send(dumps((self.identity, st, r, is_over)), copy=False)
             # action = player.action_space.sample()
             action = loads(s2c_socket.recv(copy=False).bytes)
             st, r, is_over, _ = player.step(action)
+            # print(st.shape)
             if is_over:
                 player.reset()
 
