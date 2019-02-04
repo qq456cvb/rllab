@@ -24,7 +24,9 @@ class Model(GANModelDesc):
         self.zdim = z_dim
 
     def inputs(self):
-        return [tf.placeholder(tf.float32, (None, 2), 'input')]
+        return [tf.placeholder(tf.float32, (None, self.zdim), name='z'),
+                tf.placeholder(tf.float32, (None, 2), 'input'),
+                tf.placeholder(tf.int32, (None,), 'label')]
 
     def generator(self, z):
         """ return an image generated from z"""
@@ -42,18 +44,16 @@ class Model(GANModelDesc):
         l = FullyConnected('fc3', l, 1, activation=tf.identity)
         return l
 
-    def build_losses(self, output_real, output_fake):
-        self.d_loss = 0.5 * tf.reduce_mean(tf.squared_difference(output_real, 1))\
+    def build_losses(self, output_real, output_fake, real_label):
+        self.d_loss = 0.5 * tf.reduce_mean(real_label * tf.squared_difference(output_real, 1)) \
+                      + 0.5 * tf.reduce_mean((1 - real_label) * tf.squared_difference(output_real, -1)) \
                       + 0.5 * tf.reduce_mean(tf.squared_difference(output_fake, -1))
         self.d_loss = tf.identity(self.d_loss, name='d_loss')
         self.g_loss = 0.5 * tf.reduce_mean(tf.squared_difference(output_fake, 0))
         self.g_loss = tf.identity(self.g_loss, name='g_loss')
         add_moving_summary(self.g_loss, self.d_loss)
 
-    def build_graph(self, goal_pos):
-
-        z = tf.random_normal(shape=[self.batch, self.zdim], name='z_train')
-        z = tf.placeholder_with_default(z, [None, self.zdim], name='z')
+    def build_graph(self, z, goal_real, goal_label):
 
         with argscope([FullyConnected],
                       kernel_initializer=tf.truncated_normal_initializer(stddev=0.02)):
@@ -61,10 +61,10 @@ class Model(GANModelDesc):
                 goal_gen = self.generator(z)
             tf.summary.histogram('generated-goal', goal_gen)
             with tf.variable_scope('discrim'):
-                val_pos = self.discriminator(goal_pos)
-                val_neg = self.discriminator(goal_gen)
+                val_real = self.discriminator(goal_real)
+                val_fake = self.discriminator(goal_gen)
 
-        self.build_losses(val_pos, val_neg)
+        self.build_losses(val_real, val_fake, goal_label)
         self.collect_variables()
 
     def optimizer(self):

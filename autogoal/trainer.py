@@ -5,6 +5,7 @@ from multiprocessing import Array
 from tensorpack import (TowerTrainer,
                         ModelDescBase, DataFlow, StagingInput)
 from tensorpack.tfutils.tower import TowerContext, TowerFuncWrapper
+from tensorpack.utils.stats import StatCounter
 from tensorpack.graph_builder import DataParallelBuilder, LeastLoadedDeviceSetter
 from tensorpack.tfutils.summary import add_moving_summary
 from tensorpack.utils.argtools import memoized
@@ -24,6 +25,7 @@ from rllab.misc.resolve import load_class
 from autogoal.GAN import GANModelDesc
 from rllab.envs.mujoco.maze.ant_maze_env import AntMazeEnv
 from autogoal.memory import GoalMemory
+from queue import Queue
 from scipy.spatial.distance import cdist
 import uuid
 import sys
@@ -47,7 +49,13 @@ PREDICT_BATCH_SIZE = 32
 MAX_STEP = 500
 MEMORY_SIZE = 1000
 GOAL_SAMPLE = 100
+LABEL_EVAL = 10
+R_MIN = 0.1
+R_MAX = 0.9
 goals = Array('f', [0] * (GOAL_SAMPLE * 3))
+
+
+gan_df_queue = Queue()
 
 
 class AGTrainer(TowerTrainer):
@@ -89,6 +97,11 @@ class AGTrainer(TowerTrainer):
 
         self.generator = self.get_predictor(['z'], ['gen/gen'])
         self.memory = GoalMemory(MEMORY_SIZE)
+        self.env = WrappedEnv()
+        def reset(s, goal):
+            s.super().reset()
+            s.goal = goal
+        self.env.reset = reset
 
     def run_step(self):
         # sample noise
@@ -98,9 +111,30 @@ class AGTrainer(TowerTrainer):
         gz = self.generator(z)[0]
         if len(self.memory) > 0:
             idx = np.random.randint(len(self.memory), size=(GOAL_SAMPLE // 2,))
-            sampled_goals = np.concatenate([gz, np.stack([self.memory.sample(i) for i in idx], axis=0)], axis=0)
+            real_goals = np.stack([self.memory.sample(i) for i in idx], axis=0)
+            real_labels = np.zeros([real_goals.shape[0]])
+            sampled_goals = np.concatenate([gz, real_goals], axis=0)
         else:
+            real_goals = np.zeros([0, 2], np.float32)
+            real_labels = np.zeros([0], np.int32)
             sampled_goals = np.concatenate([gz, gz[:GOAL_SAMPLE // 2]], axis=0)
+
+        # label the goals
+        if len(self.memory) > 0:
+            for i in real_goals.shape[0]:
+                stat = StatCounter()
+                for _ in range(LABEL_EVAL):
+                    self.env.reset(real_goals[i])
+                    done = False
+                    r = 0
+                    while not done:
+                        _, r, done, _ = self.env.step(self.env.action_space.sample())
+                    stat.feed(r)
+                if R_MIN < stat.average < R_MAX:
+                    real_labels[i] = 1
+
+        gan_df_queue.put([z, real_goals, real_labels])
+
         goals[:] = sampled_goals.reshape(-1)
 
         # update policy, batch size 500
@@ -175,15 +209,16 @@ class GANDF(DataFlow):
 
     def get_data(self):
         while True:
-            self.env.reset()
-            done = False
-            while not done:
-                # print(env.action_space)
-                action = self.env.action_space.sample()
-                ob, _, done, _ = self.env.step(action)
-                # cv2.imshow('mujoco', self.env.render())
-                # cv2.waitKey()
-                yield [ob[-2:]]
+            yield gan_df_queue.get()
+            # self.env.reset()
+            # done = False
+            # while not done:
+            #     # print(env.action_space)
+            #     action = self.env.action_space.sample()
+            #     ob, _, done, _ = self.env.step(action)
+            #     # cv2.imshow('mujoco', self.env.render())
+            #     # cv2.waitKey()
+            #     yield [ob[-2:]]
 
 
 class MySimulatorWorker(SimulatorProcess):
@@ -268,7 +303,8 @@ if __name__ == '__main__':
     args = get_args()
 
     logger.auto_set_dir()
-    gan_input = QueueInput(PrefetchDataZMQ(BatchData(GANDF(), args.batch), nr_proc=1))
+    gan_df = GANDF()
+    gan_input = QueueInput(gan_df)
     gan_model = GANModel(batch=args.batch, z_dim=args.z_dim)
 
     # assign GPUs for training & inference
